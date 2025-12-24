@@ -136,7 +136,16 @@ function startIntent(key) {
   state.answers = [];
   addMsg("user", it.label);
   addMsg("bot", `OK！「${it.label}」だね。いくつか確認して、最後に“サポートに伝える文章”を自動で作るよ。`);
-  askNextQuestion();
+  
+  // 言い回し例（クリックで入力欄に入れる）
+  if (it.examples && it.examples.length) {
+    addMsg("bot", "よくある言い回し例（クリックで入力欄に入る）");
+    addChips(it.examples.slice(0, 6), (x) => {
+      freeText.value = x;
+      freeText.focus();
+    });
+  }
+askNextQuestion();
 }
 
 function askNextQuestion() {

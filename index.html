@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>アルパカPC かんたんトラブル整理ツール</title>
+  <style>
+    :root{--bg:#f6f7fb;--card:#fff;--text:#111;--muted:#666;--line:#e6e8ef;--btn:#111;--btnText:#fff;}
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Noto Sans JP","Hiragino Kaku Gothic ProN","Yu Gothic UI","Yu Gothic",Meiryo,sans-serif;background:var(--bg);color:var(--text);}
+    .wrap{max-width:900px;margin:0 auto;padding:18px;}
+    .head{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:12px;}
+    .title{font-size:18px;font-weight:800;}
+    .sub{font-size:12px;color:var(--muted);line-height:1.4}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:0 1px 2px rgba(0,0,0,.04);}
+    .chat{height:min(68vh,640px);overflow:auto;padding:14px;}
+    .row{display:flex;margin:10px 0;}
+    .bot{justify-content:flex-start;}
+    .user{justify-content:flex-end;}
+    .bubble{max-width:78%;padding:10px 12px;border-radius:14px;line-height:1.55;font-size:14px;white-space:pre-wrap;}
+    .bot .bubble{background:#f1f3f9;border:1px solid var(--line);}
+    .user .bubble{background:#111;color:#fff;}
+    .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+    .chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:8px 10px;font-size:13px;cursor:pointer;}
+    .chip:hover{border-color:#cfd5e6}
+    .foot{padding:12px;border-top:1px solid var(--line);display:flex;gap:10px;align-items:center;}
+    input[type=text]{flex:1;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;outline:none;}
+    input[type=text]:focus{border-color:#b7c0dd}
+    button{border:0;border-radius:10px;padding:10px 12px;font-weight:700;cursor:pointer;}
+    .primary{background:var(--btn);color:var(--btnText);}
+    .ghost{background:#fff;border:1px solid var(--line);color:var(--text);}
+    .two{display:flex;gap:10px;flex-wrap:wrap}
+    .box{border:1px dashed var(--line);border-radius:12px;padding:10px;background:#fff;}
+    textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:10px;padding:10px;font-size:13px;line-height:1.5;resize:vertical;}
+    .small{font-size:12px;color:var(--muted);}
+    .hr{height:1px;background:var(--line);margin:10px 0;}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="head">
+      <div>
+        <div class="title">アルパカPC かんたんトラブル整理ツール</div>
+        <div class="sub">初心者の方が「何を伝えればいいか分からない」を解消するための、質問→整理→文章生成ツール（試作）</div>
+      </div>
+      <button class="ghost" id="resetBtn">やり直す</button>
+    </div>
+
+    <div class="card">
+      <div class="chat" id="chat"></div>
+      <div class="foot">
+        <input id="freeText" type="text" placeholder="（任意）困っている内容を短く入力して Enter でもOK" />
+        <button class="primary" id="sendBtn">送信</button>
+      </div>
+    </div>
+
+    <div style="margin-top:12px" class="small">
+      ※ これは「自動診断」ではなく、切り分けのための案内です。危険を感じる症状（焦げ臭い・煙・異音など）の場合はすぐ電源を抜いてサポートへ。
+    </div>
+  </div>
+
+<script>
+const KB_URL = "/data/support_kb.json"; // リポジトリに data/support_kb.json を置く
+
+let KB = null;
+let state = {
+  mode: "pick",       // pick | qa | done
+  intentKey: null,
+  qIndex: 0,
+  answers: []
+};
+
+const chat = document.getElementById("chat");
+const freeText = document.getElementById("freeText");
+const sendBtn = document.getElementById("sendBtn");
+const resetBtn = document.getElementById("resetBtn");
+
+function el(tag, attrs={}, children=[]) {
+  const e = document.createElement(tag);
+  Object.entries(attrs).forEach(([k,v]) => {
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2).toLowerCase(), v);
+    else e.setAttribute(k, v);
+  });
+  children.forEach(c => e.appendChild(typeof c === "string" ? document.createTextNode(c) : c));
+  return e;
+}
+
+function addMsg(role, text) {
+  const row = el("div", {class:"row " + (role==="bot"?"bot":"user")});
+  row.appendChild(el("div", {class:"bubble"}, [text]));
+  chat.appendChild(row);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function addChips(items, onPick) {
+  const wrap = el("div", {class:"chips"});
+  items.forEach(label => {
+    wrap.appendChild(el("button", {class:"chip", onclick:()=>onPick(label)}, [label]));
+  });
+  chat.appendChild(wrap);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function getIntent(key) {
+  return KB.intents.find(i => i.key === key);
+}
+
+function keywordClassify(text) {
+  const t = (text || "").toLowerCase();
+  let best = {key:"other", score:0};
+  for (const it of KB.intents) {
+    if (!it.keywords) continue;
+    let s = 0;
+    for (const kw of it.keywords) {
+      if (t.includes(kw.toLowerCase())) s++;
+    }
+    if (s > best.score) best = {key: it.key, score: s};
+  }
+  return best.score > 0 ? best.key : "other";
+}
+
+function askPick() {
+  addMsg("bot", "まず近いものを選んでね（文章を入力して判定もOK）");
+  const labels = KB.intents.map(i => i.label);
+  addChips(labels, (label) => {
+    const it = KB.intents.find(x => x.label === label);
+    startIntent(it.key);
+  });
+}
+
+function startIntent(key) {
+  const it = getIntent(key);
+  state.mode = "qa";
+  state.intentKey = key;
+  state.qIndex = 0;
+  state.answers = [];
+  addMsg("user", it.label);
+  addMsg("bot", `OK！「${it.label}」だね。いくつか確認して、最後に“サポートに伝える文章”を自動で作るよ。`);
+  askNextQuestion();
+}
+
+function askNextQuestion() {
+  const it = getIntent(state.intentKey);
+  const q = it.questions[state.qIndex];
+  if (!q) return finish();
+  addMsg("bot", q.q);
+  if (q.choices && q.choices.length) {
+    addChips(q.choices, (choice) => {
+      addMsg("user", choice);
+      state.answers.push({q: q.q, a: choice});
+      state.qIndex++;
+      askNextQuestion();
+    });
+  } else {
+    // free text answer
+    freeText.placeholder = "ここに回答を入力して Enter（例：エラー文をコピペ など）";
+    freeText.focus();
+  }
+}
+
+function finish() {
+  const it = getIntent(state.intentKey);
+  state.mode = "done";
+
+  addMsg("bot", "ありがとう！ここから確認手順を出すね。");
+
+  // 手順
+  const steps = it.steps.map((s, idx) => `${idx+1}. ${s}`).join("\n");
+  addMsg("bot", steps);
+
+  // 文章生成
+  const summaryLines = [];
+  summaryLines.push(`【相談内容】${it.label}`);
+  for (const x of state.answers) summaryLines.push(`- ${x.q}：${x.a}`);
+  summaryLines.push("");
+  summaryLines.push("【補足】（もし書ければ）いつから/何をしたら発生/エラー表示/試したこと など");
+
+  const mail = summaryLines.join("\n");
+  addMsg("bot", "最後に、サポートに送る文章（コピペ用）を作ったよ👇");
+
+  const box = el("div", {class:"box"});
+  const ta = el("textarea", {id:"outText"}); ta.value = mail;
+  const btnRow = el("div", {class:"two"}, [
+    el("button", {class:"primary", onclick: async()=> {
+      try{ await navigator.clipboard.writeText(ta.value); alert("コピーしたよ！"); }catch(e){ alert("コピーできなかった…手動で選択してコピーしてね"); }
+    }}, ["コピー"]),
+    el("button", {class:"ghost", onclick: ()=> {
+      const subject = encodeURIComponent("【アルパカPC】サポート相談");
+      const body = encodeURIComponent(ta.value);
+      location.href = `mailto:?subject=${subject}&body=${body}`;
+    }}, ["メールを作成"])
+  ]);
+  box.appendChild(el("div", {class:"small"}, ["▼コピペ用（編集してOK）"]));
+  box.appendChild(ta);
+  box.appendChild(el("div", {class:"hr"}));
+  box.appendChild(btnRow);
+  chat.appendChild(box);
+  chat.scrollTop = chat.scrollHeight;
+
+  freeText.placeholder = "（任意）別の内容を試すなら「やり直す」";
+}
+
+function handleFreeTextSend() {
+  const text = (freeText.value || "").trim();
+  if (!text) return;
+
+  if (state.mode === "pick") {
+    // 入力から判定
+    addMsg("user", text);
+    const key = keywordClassify(text);
+    startIntent(key);
+    freeText.value = "";
+    return;
+  }
+
+  if (state.mode === "qa") {
+    const it = getIntent(state.intentKey);
+    const q = it.questions[state.qIndex];
+    if (q && (!q.choices || q.choices.length === 0)) {
+      addMsg("user", text);
+      state.answers.push({q: q.q, a: text});
+      state.qIndex++;
+      freeText.value = "";
+      freeText.placeholder = "（任意）困っている内容を短く入力して Enter でもOK";
+      askNextQuestion();
+      return;
+    }
+  }
+
+  // done のときは無視（必要なら改善）
+  freeText.value = "";
+}
+
+async function init() {
+  addMsg("bot", "読み込み中…");
+  try{
+    const res = await fetch(KB_URL, {cache:"no-store"});
+    KB = await res.json();
+  }catch(e){
+    chat.innerHTML = "";
+    addMsg("bot", "support_kb.json が読み込めないみたい。リポジトリに /data/support_kb.json を置いたか確認してね。");
+    return;
+  }
+  chat.innerHTML = "";
+  askPick();
+}
+
+sendBtn.addEventListener("click", handleFreeTextSend);
+freeText.addEventListener("keydown", (e)=>{ if (e.key==="Enter") handleFreeTextSend(); });
+resetBtn.addEventListener("click", ()=>{ chat.innerHTML=""; state={mode:"pick",intentKey:null,qIndex:0,answers:[]}; freeText.value=""; freeText.placeholder="（任意）困っている内容を短く入力して Enter でもOK"; askPick(); });
+
+init();
+</script>
+</body>
+</html>
